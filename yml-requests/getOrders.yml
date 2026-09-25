@@ -1,0 +1,15 @@
+info:
+  name: getOrders
+  type: http
+  seq: 1
+
+http:
+  method: GET
+  url: http://localhost:5057/api/orders/db2a41bf-63b9-46c4-a836-6ff65b88e02b
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
