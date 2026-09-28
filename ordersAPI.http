@@ -1,6 +1,9 @@
-@ordersAPI_HostAddress = http://localhost:5057
+@ordersAPI_HostAddress = http://localhost:3000
 
-GET {{ordersAPI_HostAddress}}/weatherforecast/
+### Get all orders
+GET {{ordersAPI_HostAddress}}/api/orders
 Accept: application/json
 
-###
+### Get order by ID
+GET {{ordersAPI_HostAddress}}/api/orders/00000000-0000-0000-0000-000000000000
+Accept: application/json

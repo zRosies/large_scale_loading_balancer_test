@@ -19,6 +19,12 @@ var productsConnectionString =
 builder.Services.AddDbContext<ProductDbContext>(options =>
     options.UseNpgsql(productsConnectionString));
 
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = builder.Configuration.GetConnectionString("Redis");
+    options.InstanceName = "OrdersAPI_"; // Optional prefix for Redis keys
+});
+
 
 builder.Services.AddScoped<IOrderService, OrderService>();
 

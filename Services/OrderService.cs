@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Distributed;
 using ordersAPI.Database;
 using ordersAPI.DTOs;
 using ordersAPI.Entities;
@@ -6,16 +8,39 @@ using ordersAPI.Exceptions;
 
 namespace ordersAPI.Services;
 
-public class OrderService(OrdersDBContext orderDatabase, ProductDbContext productDatabase) : IOrderService
+public class OrderService(OrdersDBContext orderDatabase, ProductDbContext productDatabase,  IDistributedCache cache) : IOrderService
 {
     private readonly OrdersDBContext _context = orderDatabase;
     private readonly ProductDbContext _productDatabase = productDatabase;
+    private readonly IDistributedCache _cache = cache;
 
     public async Task<IEnumerable<Order>> GetAllOrdersAsync() =>
         await _context.Orders.AsNoTracking().ToListAsync();
 
-    public async Task<Order?> GetOrderByIdAsync(Guid id) =>
-        await _context.Orders.FindAsync(id);
+    public async Task<Order?> GetOrderByIdAsync(Guid id)
+    {
+        string cacheKey = $"order:{id}";
+        // 1. Try to read from Redis
+        var cachedOrder = await _cache.GetStringAsync(cacheKey);
+        if (!string.IsNullOrEmpty(cachedOrder))
+        {
+            return JsonSerializer.Deserialize<Order>(cachedOrder);
+        }
+        // 2. Fetch from Database if cache miss
+        var order = await _context.Orders.FindAsync(id);
+        // 3. Save to Redis with an expiration time
+        if (order != null)
+        {
+            var options = new DistributedCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10),
+                SlidingExpiration = TimeSpan.FromMinutes(2)
+            };
+            await _cache.SetStringAsync(cacheKey, JsonSerializer.Serialize(order), options);
+        }
+        return order;
+    }
+
 
     public async Task<Order> CreateOrderAsync(CreateOrderRequest orderPayload)
     {
