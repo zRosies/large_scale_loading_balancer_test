@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-api
+  labels:
+    app: orders-api
+spec:
+  replicas: 3 # Run 3 concurrent load-balanced instances
+  selector:
+    matchLabels:
+      app: orders-api
+  template:
+    metadata:
+      labels:
+        app: orders-api
+    spec:
+      containers:
+        - name: orders-api
+          image: orders-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            # host.docker.internal connects to your existing local Postgres and Redis
+            - name: ConnectionStrings__DefaultConnection
+              value: "Host=host.docker.internal;Port=5432;Database=orders;Username=postgres;Password=jasgdn;Maximum Pool Size=150;"
+            - name: ConnectionStrings__ProductsConnection
+              value: "Host=host.docker.internal;Port=5432;Database=products;Username=postgres;Password=jasgdn;Maximum Pool Size=150;"
+            - name: ConnectionStrings__Redis
+              value: "host.docker.internal:6379,connectTimeout=1000,syncTimeout=1000"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-service
+spec:
+  type: LoadBalancer # Exposes port 3000 on localhost via Docker Desktop
+  selector:
+    app: orders-api
+  ports:
+    - port: 3000
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ecommerce-gateway
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /api/orders
+            pathType: Prefix
+            backend:
+              service:
+                name: orders-service
+                port:
+                  number: 3000

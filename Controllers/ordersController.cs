@@ -6,7 +6,7 @@ using ordersAPI.Services;
 
 namespace ordersAPI.Controllers;
 
-[ApiController] // Habilita validações automáticas do modelo e respostas 400 em caso de erro
+[ApiController] 
 [Route("api/orders")] // Define a rota base: "api/orders" (remove o sufixo "Controller")
 public class OrdersController(IOrderService OrderService) : ControllerBase
 {
@@ -19,7 +19,7 @@ public class OrdersController(IOrderService OrderService) : ControllerBase
     }
 
     // GET: api/orders/5
-    [HttpGet("{id:guid}")] // {id:int} restringe o parâmetro para número inteiro
+    [HttpGet("{id:guid}")] 
     public async Task<ActionResult<Order?>> GetById([FromRoute] Guid id)
     {
         // [FromRoute] pega o valor da própria URL

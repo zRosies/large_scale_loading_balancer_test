@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
 using ordersAPI.Database;
 using ordersAPI.DTOs;
 using ordersAPI.Entities;
@@ -8,36 +10,148 @@ using ordersAPI.Exceptions;
 
 namespace ordersAPI.Services;
 
-public class OrderService(OrdersDBContext orderDatabase, ProductDbContext productDatabase,  IDistributedCache cache) : IOrderService
+public class OrderService(
+    OrdersDBContext orderDatabase,
+    ProductDbContext productDatabase,
+    IDistributedCache cache,
+    IMemoryCache memoryCache,
+    ILogger<OrderService> logger) : IOrderService
 {
     private readonly OrdersDBContext _context = orderDatabase;
     private readonly ProductDbContext _productDatabase = productDatabase;
     private readonly IDistributedCache _cache = cache;
+    private readonly IMemoryCache _memoryCache = memoryCache;
+    private readonly ILogger<OrderService> _logger = logger;
 
-    public async Task<IEnumerable<Order>> GetAllOrdersAsync() =>
-        await _context.Orders.AsNoTracking().ToListAsync();
+    private const string AllOrdersCacheKey = "orders:all";
+    private static readonly SemaphoreSlim _allOrdersLock = new(1, 1);
+
+    public async Task<IEnumerable<Order>> GetAllOrdersAsync()
+    {
+        // 1. Ultra-fast L1 In-Memory Cache (sub-millisecond, absorbs concurrency bursts)
+        if (_memoryCache.TryGetValue(AllOrdersCacheKey, out List<Order>? memOrders) && memOrders != null)
+        {
+            return memOrders;
+        }
+
+        // 2. Stampede Protection (Request Coalescing): Only one thread queries DB/Redis when cache is cold
+        await _allOrdersLock.WaitAsync();
+        try
+        {
+            // Double-check L1 after acquiring lock
+            if (_memoryCache.TryGetValue(AllOrdersCacheKey, out memOrders) && memOrders != null)
+            {
+                return memOrders;
+            }
+
+            // 3. Try L2 Redis Distributed Cache with graceful fallback
+            try
+            {
+                string? cachedOrders = await _cache.GetStringAsync(AllOrdersCacheKey);
+                if (!string.IsNullOrEmpty(cachedOrders))
+                {
+                    var ordersFromRedis = JsonSerializer.Deserialize<List<Order>>(cachedOrders);
+                    if (ordersFromRedis != null)
+                    {
+                        // Cache in L1 memory for 15 seconds
+                        _memoryCache.Set(AllOrdersCacheKey, ordersFromRedis, TimeSpan.FromSeconds(15));
+                        return ordersFromRedis;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Redis distributed cache read failed. Falling back to database.");
+            }
+
+            // 4. Cache Miss: Fetch from Postgres database
+            var orders = await _context.Orders
+                .AsNoTracking()
+                .ToListAsync();
+
+            // Populate L1 memory cache (15 seconds)
+            _memoryCache.Set(AllOrdersCacheKey, orders, TimeSpan.FromSeconds(15));
+
+            // Populate L2 Redis cache with graceful fallback
+            try
+            {
+                var options = new DistributedCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10),
+                    SlidingExpiration = TimeSpan.FromMinutes(2)
+                };
+
+                await _cache.SetStringAsync(
+                    AllOrdersCacheKey,
+                    JsonSerializer.Serialize(orders),
+                    options
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Redis distributed cache write failed.");
+            }
+
+            return orders;
+        }
+        finally
+        {
+            _allOrdersLock.Release();
+        }
+    }
+
 
     public async Task<Order?> GetOrderByIdAsync(Guid id)
     {
         string cacheKey = $"order:{id}";
-        // 1. Try to read from Redis
-        var cachedOrder = await _cache.GetStringAsync(cacheKey);
-        if (!string.IsNullOrEmpty(cachedOrder))
+
+        // 1. Try L1 Memory Cache
+        if (_memoryCache.TryGetValue(cacheKey, out Order? memOrder) && memOrder != null)
         {
-            return JsonSerializer.Deserialize<Order>(cachedOrder);
+            return memOrder;
         }
-        // 2. Fetch from Database if cache miss
+
+        // 2. Try L2 Redis with graceful fallback
+        try
+        {
+            var cachedOrder = await _cache.GetStringAsync(cacheKey);
+            if (!string.IsNullOrEmpty(cachedOrder))
+            {
+                var orderFromRedis = JsonSerializer.Deserialize<Order>(cachedOrder);
+                if (orderFromRedis != null)
+                {
+                    _memoryCache.Set(cacheKey, orderFromRedis, TimeSpan.FromMinutes(1));
+                    return orderFromRedis;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Redis cache read failed for order {OrderId}. Falling back to database.", id);
+        }
+
+        // 3. Cache Miss: Fetch from Database
         var order = await _context.Orders.FindAsync(id);
-        // 3. Save to Redis with an expiration time
+
         if (order != null)
         {
-            var options = new DistributedCacheEntryOptions
+            _memoryCache.Set(cacheKey, order, TimeSpan.FromMinutes(1));
+
+            try
             {
-                AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10),
-                SlidingExpiration = TimeSpan.FromMinutes(2)
-            };
-            await _cache.SetStringAsync(cacheKey, JsonSerializer.Serialize(order), options);
+                var options = new DistributedCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10),
+                    SlidingExpiration = TimeSpan.FromMinutes(2)
+                };
+                await _cache.SetStringAsync(cacheKey, JsonSerializer.Serialize(order), options);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Redis cache write failed for order {OrderId}.", id);
+            }
         }
+
         return order;
     }
 
@@ -78,6 +192,18 @@ public class OrderService(OrdersDBContext orderDatabase, ProductDbContext produc
         _context.Orders.Add(order);
 
         await _context.SaveChangesAsync();
+        await _productDatabase.SaveChangesAsync();
+
+        // Invalidate orders list cache across L1 and L2
+        _memoryCache.Remove(AllOrdersCacheKey);
+        try
+        {
+            await _cache.RemoveAsync(AllOrdersCacheKey);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to invalidate Redis cache for {CacheKey}.", AllOrdersCacheKey);
+        }
 
         return order;
     }

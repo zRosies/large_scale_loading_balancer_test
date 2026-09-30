@@ -8,16 +8,24 @@ var builder = WebApplication.CreateBuilder(args);
 var connectionString =
     builder.Configuration.GetConnectionString("DefaultConnection");
 
+// Register NpgsqlDataSources as singletons once to optimize connection pooling under high concurrency
+var ordersDataSource = DatabaseConfiguration.CreateDataSourceBuilder(connectionString!).Build();
+builder.Services.AddSingleton(ordersDataSource);
+
 builder.Services.AddDbContext<OrdersDBContext>(options =>
-    options.UseNpgsql(
-        DatabaseConfiguration.CreateDataSourceBuilder(connectionString!).Build(),
-        o => o.MapEnum<OrderStatus>("orders_status_enum")));
+    options.UseNpgsql(ordersDataSource, o => o.MapEnum<OrderStatus>("orders_status_enum")));
 
 var productsConnectionString =
     builder.Configuration.GetConnectionString("ProductsConnection");
 
+var productsDataSource = new Npgsql.NpgsqlDataSourceBuilder(productsConnectionString!).Build();
+builder.Services.AddSingleton(productsDataSource);
+
 builder.Services.AddDbContext<ProductDbContext>(options =>
-    options.UseNpgsql(productsConnectionString));
+    options.UseNpgsql(productsDataSource));
+
+// In-Memory cache for ultra-fast L1 responses and concurrency resilience
+builder.Services.AddMemoryCache();
 
 builder.Services.AddStackExchangeRedisCache(options =>
 {

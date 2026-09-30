@@ -6,7 +6,7 @@ export const options = {
   stages: [
     { duration: "10s", target: 5 }, // Poucos usuários: 5 VUs (Virtual Users)
     { duration: "20s", target: 50 }, // Carga moderada: 50 VUs
-    { duration: "20s", target: 150 }, // Carga pesada / pico: 150 VUs
+    { duration: "20s", target: 400 }, // Carga pesada / pico: 150 VUs
     { duration: "10s", target: 0 }, // Desaceleração até 0 VUs
   ],
   thresholds: {
