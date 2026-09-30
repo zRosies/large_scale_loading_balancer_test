@@ -35,14 +35,14 @@ public class OrderService(
         }
 
         // 2. Stampede Protection (Request Coalescing): Only one thread queries DB/Redis when cache is cold
-        await _allOrdersLock.WaitAsync();
+        // await _allOrdersLock.WaitAsync();
         try
         {
             // Double-check L1 after acquiring lock
-            if (_memoryCache.TryGetValue(AllOrdersCacheKey, out memOrders) && memOrders != null)
-            {
-                return memOrders;
-            }
+            // if (_memoryCache.TryGetValue(AllOrdersCacheKey, out memOrders) && memOrders != null)
+            // {
+            //     return memOrders;
+            // }
 
             // 3. Try L2 Redis Distributed Cache with graceful fallback
             try
@@ -96,7 +96,7 @@ public class OrderService(
         }
         finally
         {
-            _allOrdersLock.Release();
+            // _allOrdersLock.Release();
         }
     }
 
